@@ -1,0 +1,676 @@
+mod vars;
+
+use gtk::{Inhibit, ComboBoxExt, ComboBoxTextExt, ComboBoxText, TreeModelExt, FileChooserExt, TextBufferExt};
+use gtk::prelude::*;
+use gtk::DialogFlags;
+use relm_derive::{Msg, widget};
+use relm::{Component, Widget, init, connect, Relm};
+use serde::{Serialize, Deserialize};
+use std::collections::BTreeMap;
+use sha::sha256::ops::digest;
+use reqwest::Url;
+use regex::Regex;
+use crate::vars::*;
+use std::path::{PathBuf, Path};
+
+use self::HeaderMsg::*;
+use self::WinMsg::*;
+
+
+
+#[derive(Msg)]
+pub enum HeaderMsg {
+    BtnNew,
+    Load,
+    BtnFromUrl,
+    NewSubtitle(String)
+}
+
+pub struct HeaderModel {
+    subtitle: String,
+}
+#[widget]
+impl Widget for Header {
+    fn model() -> HeaderModel {
+        HeaderModel {
+            subtitle: "Untitled".to_string(),
+        }
+    }
+
+    fn update(&mut self, event: HeaderMsg) {
+        match event {
+            NewSubtitle(subtitle) => {
+                let new_sub = {
+                    if !subtitle.is_empty() {
+                        subtitle
+                    }
+                    else {
+                        "Untitled".to_string()
+                    }
+                };
+                self.model.subtitle = new_sub;
+            }
+            _ => {}
+        }
+    }
+
+    view! {
+        #[name="titlebar"]
+        gtk::HeaderBar {
+            title: Some("Package Maker"),
+            subtitle: Some(&self.model.subtitle),
+            show_close_button: true,
+
+            gtk::Button {
+                clicked => BtnNew,
+                label: "New"
+            },
+            #[name="load_button"]
+            gtk::Button {
+                clicked => Load,
+                label: "Load",
+            },
+
+            gtk::Button {
+                clicked => BtnFromUrl,
+                label: "From URL"
+            }
+        }
+    }
+}
+
+pub struct Model {
+    header: Component<Header>,
+    pkg_data: PkgData,
+    can_start: bool
+}
+
+#[derive(Debug, Clone)]
+pub struct PkgData {
+    name: String,
+    version: String,
+    release: u16,
+    source: String,
+    license: String,
+    component: String,
+    summary: String,
+    description: String,
+    build_sys: String,
+    org_yaml: Option<YamlPkg>,
+    file_path: Option<PathBuf>
+}
+
+fn ask_for_url(parent: &gtk::Window) -> Option<String> {
+    let dialog = gtk::MessageDialog::new::<gtk::Window>(Some(parent), DialogFlags::MODAL | DialogFlags::USE_HEADER_BAR, gtk::MessageType::Question, gtk::ButtonsType::OkCancel, "Please enter the desired URL to analyze");
+    let url_entry = gtk::Entry::new();
+    dialog.get_content_area().pack_end(&url_entry, false, false, 0);
+    dialog.show_all();
+
+    let response = dialog.run();
+    let text = url_entry.get_text().expect("get text failed").to_string();
+    dialog.destroy();
+
+    if response == gtk::ResponseType::Ok {
+        Some(text)
+    }
+    else {
+        None
+    }
+
+}
+
+fn ask_for_file(parent: &gtk::Window) -> Option<std::path::PathBuf> {
+    let chooser = gtk::FileChooserDialog::with_buttons::<gtk::Window>(Some("Select package.yml"), Some(parent), gtk::FileChooserAction::Open, &[("Open",gtk::ResponseType::Ok)]);
+    chooser.show_all();
+    let response = chooser.run();
+    let opt_file = chooser.get_filename();
+    chooser.destroy();
+
+    if response == gtk::ResponseType::Ok {
+        opt_file
+    }
+    else {
+        None
+    }
+
+}
+
+impl PkgData {
+    fn new() -> Self {
+        Self {
+            name: "".to_string(),
+            version: "".to_string(),
+            release: 1,
+            source: "".to_string(),
+            license: "".to_string(),
+            component: "".to_string(),
+            summary: "".to_string(),
+            description: "".to_string(),
+            build_sys: "".to_string(),
+            org_yaml: None,
+            file_path: None
+
+        }
+    }
+
+    fn is_filled(&self) -> bool {
+        !self.name.is_empty() && !self.version.is_empty() && !self.license.is_empty() && !self.component.is_empty() && !self.summary.is_empty() && !self.description.is_empty() && !self.build_sys.is_empty() && !self.source.is_empty()
+    }
+
+    fn join_url_data(&mut self, url_data: &PkgDataUrl) {
+        if self.name.is_empty() {
+            self.name = url_data.name.clone();
+        }
+
+        if self.summary.is_empty() {
+            self.summary = url_data.summary.clone();
+        }
+
+        self.source = url_data.source.clone();
+        self.version = url_data.version.clone();
+    }
+}
+
+
+
+fn to_u8s(x: u32) -> [u8;4] {
+    let b1 : u8 = ((x >> 24) & 0xff) as u8;
+    let b2 : u8 = ((x >> 16) & 0xff) as u8;
+    let b3 : u8 = ((x >> 8) & 0xff) as u8;
+    let b4 : u8 = (x & 0xff) as u8;
+    return [b1, b2, b3, b4]
+}
+
+fn calc_sha(source: &str) -> String  {
+    let mut buffer = Vec::new();
+    reqwest::blocking::get(source).unwrap().copy_to(&mut buffer).unwrap();
+    let sha_u32 = digest(&buffer);
+    let sha_u8 = [to_u8s(sha_u32[0]), to_u8s(sha_u32[1]), to_u8s(sha_u32[2]), to_u8s(sha_u32[3]), to_u8s(sha_u32[4]), to_u8s(sha_u32[5]), to_u8s(sha_u32[6]), to_u8s(sha_u32[7])].concat();
+
+    hex::encode(&sha_u8[..])
+}
+
+#[derive(Debug)]
+struct PkgDataUrl {
+    name: String,
+    version: String,
+    source: String,
+    summary: String
+}
+
+fn guess_summary (org_url: &Url) -> String {
+    let mut segments = org_url.path_segments().unwrap();
+    let mut main_url = org_url.clone();
+    main_url.set_path(segments.nth_back(2).unwrap());
+    let html = reqwest::blocking::get(main_url).unwrap().text().unwrap();
+
+    let summary_regex = Regex::new("<meta name=\"description\" content=\"([\\s\\w]+)\\.").unwrap();
+    summary_regex.captures(&html).unwrap().get(1).unwrap().as_str().to_string()
+
+}
+
+
+fn from_url(url: &str) -> PkgDataUrl {
+    let url = Url::parse(url).unwrap();
+    let url_parser = Regex::new(r"(?P<name>\D\w+)?-?\s*(?P<version>\d+\.?(?:\d+\.)?\d+?)?").unwrap();
+    let url_segments = url.path_segments().ok_or_else(|| "cannot be base").unwrap();
+    let whole_name = url_segments.clone().last().unwrap();
+
+    let captures = url_parser.captures(whole_name).unwrap();
+    let name = {
+        let match_str = captures.name("name").map_or("", |reg_match| reg_match.as_str());
+        // If there's no name in url then try to get from the third segment in URL
+        // e.g: name/_something_/2.3.1.zip
+        // Note: This works for Github releases
+        if match_str.is_empty() {
+            url_segments.clone().nth_back(2).unwrap_or("")
+        }
+        else {
+            match_str
+        }
+    };
+
+    let version = captures.name("version").map_or("", |reg_match| reg_match.as_str());
+    let summary = guess_summary(&url);
+
+    println!("{:?}, -> {}, {}", whole_name, name, version);
+
+    PkgDataUrl {
+        name: name.to_string(),
+        version: version.to_string(),
+        source: url.to_string(),
+        summary
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+struct YamlPkg {
+    name: String,
+    version: String,
+    release: u16,
+    source: Vec<BTreeMap<String, String >>,
+    license: String,
+    component: String,
+    summary: String,
+    description: String,
+    builddeps: Vec<String>, // This one is actually optional
+    setup: String, // This one is actually optional
+    build: String, // This one is actually optional
+    install: String, // This one is actually optional
+
+    // Optional keys
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clang: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extract: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autodep: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    emul32: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    libsplit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optimize: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rundeps: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replaces: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patterns: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    networking: Option<bool>,
+
+
+    // Build steps, optional
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>
+
+
+
+}
+
+impl Into<YamlPkg> for PkgData {
+
+    fn into(self) -> YamlPkg {
+        let mut bmap = BTreeMap::new();
+        let sha = calc_sha(&self.source);
+        bmap.insert(self.source, sha); // TODO: Calc sha256
+
+        let empty = ("".to_string(), "".to_string(), "".to_string());
+        let (setup_str, build_str, install_str) = match self.build_sys.as_str() {
+            "Meson" => ("%meson_configure".to_string(), "%ninja_build".to_string(), "%ninja_install".to_string()),
+            "Unknown" => {
+                if let Some(org_yaml) = self.org_yaml.clone() {
+                    (org_yaml.setup, org_yaml.build, org_yaml.install)
+                }
+                else {
+                    empty
+                }
+            }
+            _ => empty
+        };
+
+
+
+        YamlPkg {
+            name: self.name,
+            version: self.version,
+            release: self.release,
+            source: vec![bmap],
+            license: self.license,
+            component: self.component,
+            summary: self.summary,
+            description: self.description,
+            builddeps: self.org_yaml.clone().map_or(Vec::new(), |yaml| yaml.builddeps),
+            setup: setup_str.to_string(),
+            build: build_str.to_string(),
+            install: install_str.to_string(),
+
+            //Optional Keys
+            clang: self.org_yaml.clone().map_or(None, |yaml| yaml.clang),
+            extract: self.org_yaml.clone().map_or(None, |yaml| yaml.extract),
+            autodep: self.org_yaml.clone().map_or(None, |yaml| yaml.autodep),
+            emul32: self.org_yaml.clone().map_or(None, |yaml| yaml.emul32),
+            libsplit: self.org_yaml.clone().map_or(None, |yaml| yaml.libsplit),
+            optimize: self.org_yaml.clone().map_or(None, |yaml| yaml.optimize),
+            rundeps: self.org_yaml.clone().map_or(None, |yaml| yaml.rundeps),
+            replaces: self.org_yaml.clone().map_or(None, |yaml| yaml.replaces),
+            patterns: self.org_yaml.clone().map_or(None, |yaml| yaml.patterns),
+            environment: self.org_yaml.clone().map_or(None, |yaml| yaml.environment),
+            networking: self.org_yaml.clone().map_or(None, |yaml| yaml.networking),
+
+
+            // Build steps, optional
+            check: self.org_yaml.clone().map_or(None, |yaml| yaml.check),
+            profile: self.org_yaml.map_or(None, |yaml| yaml.profile),
+
+        }
+    }
+}
+impl From<YamlPkg> for PkgData {
+    fn from(yaml: YamlPkg) -> Self {
+        let build_sys = match yaml.setup.as_str() {
+            "%meson_configure" => "Meson",
+            _ => "Unknown" // Nothing else is supported right now xD
+        };
+        let yaml_copy = yaml.clone();
+
+        let (url_str, _) = yaml.source.first().unwrap().iter().nth(0).unwrap();
+        PkgData {
+            name: yaml.name,
+            version: yaml.version,
+            release: yaml.release,
+            source: url_str.to_string(),
+            license: yaml.license,
+            component: yaml.component,
+            summary: yaml.summary,
+            description: yaml.description,
+            build_sys:  build_sys.to_string(),
+            org_yaml: Some(yaml_copy),
+            file_path: None
+        }
+
+    }
+}
+
+#[derive(Msg)]
+pub enum WinMsg {
+    Quit,
+    NameChanged(String),
+    VersionChanged(String),
+    UrlChanged(String),
+    LicenseChanged(String),
+    ComponentChanged(String),
+    BuildSysChanged(String),
+    SummaryChanged(String),
+    DescriptionChanged,
+    New,
+    LoadFile,
+    FromUrl,
+    StartMaking
+}
+
+impl Win {
+    fn update_descr(&self) {
+        let buffer = self.txt_descr.get_buffer().unwrap();
+        buffer.set_text(&self.model.pkg_data.description);
+    }
+}
+
+const RIGHT_COL_PROPORTION: i32 = 10;
+#[widget]
+impl Widget for Win {
+    fn model() -> Model {
+        let header = init::<Header>(()).expect("Header");
+
+        Model {
+            header,
+            pkg_data: PkgData::new(),
+            can_start: false
+        }
+    }
+
+    fn init_view(&mut self) {
+        fn fill_combo(cmb: &ComboBoxText, slice_data: &[&str]) {
+            for str_data in slice_data.iter() {
+                cmb.append_text(str_data);
+            }
+
+            cmb.set_active_iter(cmb.get_model().unwrap().get_iter_first().as_ref());
+        }
+
+        fill_combo(&self.cmb_license, LICENSES);
+        fill_combo(&self.cmb_component, COMPONENTS);
+        fill_combo(&self.cmb_buildsys, BUILD_SYSS);
+        
+    }
+
+    fn update(&mut self, event: WinMsg) {
+
+        match event {
+            Quit => gtk::main_quit(),
+            NameChanged(name) => {
+                self.model.header.emit(HeaderMsg::NewSubtitle(name.clone()));
+                self.model.pkg_data.name = name.clone();
+            },
+            VersionChanged(version) => {
+                self.model.pkg_data.version = version;
+            },
+            UrlChanged(url) => {
+                self.model.pkg_data.source = url;
+            },
+            LicenseChanged(license) => {
+                self.model.pkg_data.license = license;
+            },
+            ComponentChanged(comp) => {
+                self.model.pkg_data.component = comp;
+            },
+            BuildSysChanged(build_sys) => {
+                self.model.pkg_data.build_sys = build_sys;
+            },
+            SummaryChanged(summary) => {
+                self.model.pkg_data.summary = summary;
+            },
+            DescriptionChanged => {
+                let buffer = self.txt_descr.get_buffer().unwrap();
+                self.model.pkg_data.description = buffer.get_text(&buffer.get_start_iter(), &buffer.get_end_iter(), false).unwrap().to_string();
+            },
+            New => {
+                self.model.pkg_data = PkgData::new();
+
+                self.update_descr();
+            }
+            LoadFile => {
+                if let Some(pkg_path) = ask_for_file(&self.window) {
+                    let pkg_str = std::fs::read_to_string(&pkg_path).expect("Something went wrong reading package.yml");
+                    let pkg_yaml: YamlPkg = serde_yaml::from_str(&pkg_str).expect("Something went wrong parsing package.yml");
+                    let mut pkg_data: PkgData = pkg_yaml.into();
+                    pkg_data.release += 1; // Update release
+                    pkg_data.file_path = Some(pkg_path);
+                    self.model.pkg_data = pkg_data;
+
+                    self.update_descr();
+                }
+            },
+            FromUrl => {
+                if let Some(url_str) = ask_for_url(&self.window) {
+                    let url_data = from_url(&url_str);
+                    self.model.pkg_data.join_url_data(&url_data);
+
+                    // Update Gui
+                    self.ent_name.set_text(&self.model.pkg_data.name);
+                    self.ent_version.set_text(&self.model.pkg_data.version);
+                    self.ent_source.set_text(&self.model.pkg_data.source);
+                    self.ent_summary.set_text(&self.model.pkg_data.summary);
+                    self.update_descr();
+                }
+            },
+            StartMaking => {
+                let yaml: YamlPkg = self.model.pkg_data.clone().into();
+                let file_path = {
+                    if let Some(file_path) = &self.model.pkg_data.file_path {
+                        file_path.clone()
+                    }
+                    else {
+                        let pkg_path = Path::new(PACKAGES_PATH).join(self.model.pkg_data.name.clone()).to_path_buf();
+                        if !pkg_path.is_dir() {
+                            std::fs::create_dir_all(&pkg_path).unwrap();
+                        }
+
+                        pkg_path.join("package.yml")
+                    }
+                };
+                serde_yaml::to_writer(std::fs::File::create(file_path).unwrap(),&yaml).unwrap();
+            }
+        }
+        self.model.can_start = self.model.pkg_data.is_filled();
+    }
+
+    fn subscriptions(&mut self, relm: &Relm<Self>) {
+        let header = &self.model.header;
+        connect!(header@BtnNew, relm, New);
+        connect!(header@Load, relm, LoadFile);
+        connect!(header@BtnFromUrl, relm, FromUrl);
+
+        let buffer = &self.txt_descr.get_buffer().unwrap();
+        connect!(relm, buffer, connect_changed(_), DescriptionChanged);
+    }
+
+    view! {
+        #[name="window"]
+        gtk::Window {
+            titlebar: Some(self.model.header.widget()),
+
+            #[name="app"]
+            gtk::Grid {
+                row_homogeneous: true,
+                column_homogeneous: true,
+                gtk::Label {
+                    markup: "<b>Name</b>",
+                },
+                #[name="ent_name"]
+                gtk::Entry {
+                    text: &self.model.pkg_data.name,
+                    changed(entry) => NameChanged(entry.get_text().expect("get_text failed").to_string()),
+                    cell : {
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Label {
+                    markup: "<b>Version</b>",
+                    cell: {
+                        top_attach: 1,
+                        left_attach: 0,
+                        width: 1
+                    }
+                },
+                #[name="ent_version"]
+                gtk::Entry {
+                    text: &self.model.pkg_data.version,
+                    changed(entry) => VersionChanged(entry.get_text().expect("get_text failed").to_string()),
+                    cell: {
+                        top_attach: 1,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Label {
+                    markup: "<b>URL</b>",
+                    cell: {
+                        top_attach: 2,
+                        left_attach: 0,
+                    }
+                },
+                #[name="ent_source"]
+                gtk::Entry {
+                    text: &self.model.pkg_data.source,
+                    changed(entry) => UrlChanged(entry.get_text().expect("get_text failed").to_string()),
+                    cell: {
+                        top_attach: 2,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Label {
+                    markup: "<b>License</b>",
+                    cell: {
+                        top_attach: 3,
+                        left_attach: 0
+                    }
+                },
+                #[name="cmb_license"]
+                gtk::ComboBoxText {
+                    changed(combo) => LicenseChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+                    cell: {
+                        top_attach: 3,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    },
+                },
+                gtk::Label {
+                    markup: "<b>Component</b>",
+                    cell: {
+                        top_attach: 4,
+                        left_attach: 0
+                    }
+                },
+                #[name="cmb_component"]
+                gtk::ComboBoxText {
+                    changed(combo) => ComponentChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+                    cell: {
+                        top_attach: 4,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    },
+                },
+                gtk::Label {
+                    markup: "<b>Build Sys</b>",
+                    cell: {
+                        top_attach: 5,
+                        left_attach:0
+                    }
+                },
+                #[name="cmb_buildsys"]
+                gtk::ComboBoxText {
+                    changed(combo) => BuildSysChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+                    cell: {
+                        top_attach: 5,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Label {
+                    markup: "<b>Summary</b>",
+                    cell: {
+                        top_attach: 6,
+                        left_attach: 0
+                    }
+                },
+                #[name="ent_summary"]
+                gtk::Entry { // Summary
+                    text: &self.model.pkg_data.summary,
+                    changed(entry) => SummaryChanged(entry.get_text().expect("get_text failed").to_string()),
+                    cell: {
+                        top_attach: 6,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Label {
+                    markup: "<b>Description</b>",
+                    cell: {
+                        top_attach: 7,
+                        left_attach: 0
+                    }
+                },
+                #[name="txt_descr"]
+                gtk::TextView {
+                    wrap_mode: gtk::WrapMode::Word,
+                    cell: {
+                        top_attach: 7,
+                        left_attach: 1,
+                        width: RIGHT_COL_PROPORTION
+                    }
+                },
+                gtk::Button {
+                    label: "Start",
+                    sensitive: self.model.can_start,
+                    clicked => StartMaking,
+                    cell: {
+                        top_attach: 8,
+                        left_attach: RIGHT_COL_PROPORTION
+                    }
+                }
+            },
+            delete_event(_, _) => (Quit, Inhibit(false)),
+        }
+    }
+}
+
+fn main() {
+    Win::run(()).expect("Window::run");
+}
