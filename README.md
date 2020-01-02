@@ -12,7 +12,9 @@ It serves as a GUI for editing some data in a package:
 - Summary
 - Description
 
-It can load a package file and save it later, it will calculate sha256 automatically as you save, and my favorite: URL analysis
+It will save any new package on a folder next to the executable with the same name as the package and the data inside a package.yml, as is standard on Solus.
+
+It can load a package file and save it later, it will calculate sha256 automatically as you save, and my favorite: URL analysis.
 
 ## URL analysis
 The button "From URL" will ask for a URL pointing to a file and will try to infer as much data from there. Data obtained right now
@@ -30,3 +32,5 @@ Also it's made so that updating an existing package is a matter of using "From U
 This program is VERY buggy (just look at the miriads of unwrap all around), that said, this won't break anything, this program will panic (a lot probably), but is expected to never crash, so undefined behaviour shouldn't be possible (thanks Rust).
 
 In other words, this program will shut down itself a lot, but I have certain faith that it won't ruin anything (not battle tested, so a backup is always desirable).
+
+Also the GUI can be improved, I know (specially for )

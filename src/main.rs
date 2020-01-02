@@ -545,7 +545,7 @@ impl Widget for Win {
                         file_path.clone()
                     }
                     else {
-                        let pkg_path = Path::new(PACKAGES_PATH).join(self.model.pkg_data.name.clone()).to_path_buf();
+                        let pkg_path = Path::new(&std::env::current_dir().unwrap()).join(self.model.pkg_data.name.clone()).to_path_buf();
                         if !pkg_path.is_dir() {
                             std::fs::create_dir_all(&pkg_path).unwrap();
                         }
