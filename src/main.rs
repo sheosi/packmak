@@ -527,7 +527,6 @@ impl Widget for Win {
                 if let Some(url_str) = ask_for_url(&self.window) {
                     let url_data = from_url(&url_str);
                     self.model.pkg_data.join_url_data(&url_data);
-                    println!("{:?}", self.model.pkg_data);
 
                     // Update Gui
                     self.ent_name.set_text(&self.model.pkg_data.name);
