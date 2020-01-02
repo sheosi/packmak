@@ -1,5 +1,5 @@
 [package]
-name = "pacmak"
+name = "packmak"
 version = "0.1.0"
 authors = ["sheosi <sertorbe@gmail.com>"]
 edition = "2018"
