@@ -21,5 +21,12 @@ The button "From URL" will ask for a URL pointing to a file and will try to infe
 - Version: From file name
 - Source: (Well, of course)
 - Summary: If it came from a Github repo will load the main page and get the summary (buggy right now though)
+- Build system: Only for zip files, and only detects meson
+- License: Only for zip files, and only detects GPL-3
 
-Also it's made so that updating an existing package is a matter of using "From URL" and saving
+Also it's made so that updating an existing package is a matter of using "From URL" and saving.
+
+## Buginess
+This program is VERY buggy (just look at the miriads of unwrap all around), that said, this won't break anything, this program will panic (a lot probably), but is expected to never crash, so undefined behaviour shouldn't be possible (thanks Rust).
+
+In other words, this program will shut down itself a lot, but I have certain faith that it won't ruin anything (not battle tested, so a backup is always desirable).

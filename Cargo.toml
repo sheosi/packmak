@@ -17,3 +17,5 @@ reqwest = {version = "^0.10", features = ["blocking"] }
 sha = "^1.0"
 regex = "1"
 hex = "^0.4"
+edit-distance = "^2.1"
+zip = "^0.5"

@@ -1,4 +1,5 @@
 mod vars;
+mod guess;
 
 use gtk::{Inhibit, ComboBoxExt, ComboBoxTextExt, ComboBoxText, TreeModelExt, FileChooserExt, TextBufferExt};
 use gtk::prelude::*;
@@ -23,32 +24,51 @@ pub enum HeaderMsg {
     BtnNew,
     Load,
     BtnFromUrl,
-    NewSubtitle(String)
+    NewSubtitle(String),
+    SetSaved(bool)
 }
 
 pub struct HeaderModel {
     subtitle: String,
+    is_saved: bool,
+    pkg_name: String
 }
 #[widget]
 impl Widget for Header {
     fn model() -> HeaderModel {
         HeaderModel {
-            subtitle: "Untitled".to_string(),
+            subtitle: "Untitled *".to_string(),
+            is_saved: false,
+            pkg_name: "Untitled".to_string()
         }
     }
 
     fn update(&mut self, event: HeaderMsg) {
+        fn make_sub(model: &HeaderModel) -> String {
+            let pkg_name = {
+                if !model.pkg_name.is_empty() {
+                    model.pkg_name.clone()
+                }
+                else {
+                    "Untitled".to_string()
+                }
+            };
+
+            if model.is_saved {
+                pkg_name
+            }
+            else {
+                pkg_name + "*"
+            }
+        }
         match event {
             NewSubtitle(subtitle) => {
-                let new_sub = {
-                    if !subtitle.is_empty() {
-                        subtitle
-                    }
-                    else {
-                        "Untitled".to_string()
-                    }
-                };
-                self.model.subtitle = new_sub;
+                self.model.pkg_name = subtitle;
+                self.model.subtitle = make_sub(&self.model);
+            }
+            SetSaved(is_saved) => {
+                self.model.is_saved = is_saved;
+                self.model.subtitle = make_sub(&self.model);
             }
             _ => {}
         }
@@ -166,6 +186,14 @@ impl PkgData {
             self.summary = url_data.summary.clone();
         }
 
+        if url_data.license.is_some() && self.license == "Unknown" {
+            self.license = url_data.license.as_ref().unwrap().to_string();
+        }
+
+        if url_data.build_sys.is_some() && self.build_sys == "None" {
+            self.build_sys = url_data.build_sys.as_ref().unwrap().to_string();
+        }
+
         self.source = url_data.source.clone();
         self.version = url_data.version.clone();
     }
@@ -195,17 +223,23 @@ struct PkgDataUrl {
     name: String,
     version: String,
     source: String,
-    summary: String
+    summary: String,
+    license: Option<String>,
+    build_sys: Option<String>
 }
 
 fn guess_summary (org_url: &Url) -> String {
     let mut segments = org_url.path_segments().unwrap();
     let mut main_url = org_url.clone();
-    main_url.set_path(segments.nth_back(2).unwrap());
+
+    let repo = segments.clone().nth_back(3).unwrap();
+    let author_name = segments.nth_back(2).unwrap();
+    main_url.set_path(&(author_name.to_owned() + "/" + repo));
     let html = reqwest::blocking::get(main_url).unwrap().text().unwrap();
 
     let summary_regex = Regex::new("<meta name=\"description\" content=\"([\\s\\w]+)\\.").unwrap();
-    summary_regex.captures(&html).unwrap().get(1).unwrap().as_str().to_string()
+    let captures = summary_regex.captures(&html).unwrap();
+    captures.get(1).unwrap().as_str().to_string()
 
 }
 
@@ -232,14 +266,18 @@ fn from_url(url: &str) -> PkgDataUrl {
 
     let version = captures.name("version").map_or("", |reg_match| reg_match.as_str());
     let summary = guess_summary(&url);
+    let (license, build_sys) = crate::guess::try_guess_license_build_sys_from_url(&url);
 
-    println!("{:?}, -> {}, {}", whole_name, name, version);
+    println!("{:?}, -> {}, {}, {}", whole_name, name, version, license.clone().unwrap());
+
 
     PkgDataUrl {
         name: name.to_string(),
         version: version.to_string(),
         source: url.to_string(),
-        summary
+        summary,
+        license,
+        build_sys
     }
 }
 
@@ -417,7 +455,7 @@ impl Widget for Win {
     fn init_view(&mut self) {
         fn fill_combo(cmb: &ComboBoxText, slice_data: &[&str]) {
             for str_data in slice_data.iter() {
-                cmb.append_text(str_data);
+                cmb.append(Some(str_data),str_data);
             }
 
             cmb.set_active_iter(cmb.get_model().unwrap().get_iter_first().as_ref());
@@ -435,33 +473,41 @@ impl Widget for Win {
             Quit => gtk::main_quit(),
             NameChanged(name) => {
                 self.model.header.emit(HeaderMsg::NewSubtitle(name.clone()));
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.name = name.clone();
             },
             VersionChanged(version) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.version = version;
             },
             UrlChanged(url) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.source = url;
             },
             LicenseChanged(license) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.license = license;
             },
             ComponentChanged(comp) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.component = comp;
             },
             BuildSysChanged(build_sys) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.build_sys = build_sys;
             },
             SummaryChanged(summary) => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.summary = summary;
             },
             DescriptionChanged => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 let buffer = self.txt_descr.get_buffer().unwrap();
                 self.model.pkg_data.description = buffer.get_text(&buffer.get_start_iter(), &buffer.get_end_iter(), false).unwrap().to_string();
             },
             New => {
+                self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data = PkgData::new();
-
                 self.update_descr();
             }
             LoadFile => {
@@ -474,18 +520,22 @@ impl Widget for Win {
                     self.model.pkg_data = pkg_data;
 
                     self.update_descr();
+                    self.model.header.emit(HeaderMsg::SetSaved(true));
                 }
             },
             FromUrl => {
                 if let Some(url_str) = ask_for_url(&self.window) {
                     let url_data = from_url(&url_str);
                     self.model.pkg_data.join_url_data(&url_data);
+                    println!("{:?}", self.model.pkg_data);
 
                     // Update Gui
                     self.ent_name.set_text(&self.model.pkg_data.name);
                     self.ent_version.set_text(&self.model.pkg_data.version);
                     self.ent_source.set_text(&self.model.pkg_data.source);
                     self.ent_summary.set_text(&self.model.pkg_data.summary);
+                    self.cmb_license.set_active_id(Some(&self.model.pkg_data.license));
+                    self.cmb_buildsys.set_active_id(Some(&self.model.pkg_data.build_sys));
                     self.update_descr();
                 }
             },
@@ -505,6 +555,7 @@ impl Widget for Win {
                     }
                 };
                 serde_yaml::to_writer(std::fs::File::create(file_path).unwrap(),&yaml).unwrap();
+                self.model.header.emit(HeaderMsg::SetSaved(true));
             }
         }
         self.model.can_start = self.model.pkg_data.is_filled();
