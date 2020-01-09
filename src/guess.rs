@@ -139,21 +139,21 @@ fn guess_build_sys_from_zip<'a, A: Archive>(pkg_zip: &'a mut A) -> Option<String
 	}
 }
 
-pub fn try_guess_license_build_sys_from_url(url: &Url) -> (Option<String>, Option<String>) {
+pub fn try_guess_license_build_sys_for(url: &Url) -> (Option<String>, Option<String>, Option<Vec<u8>>) {
 	let mut buffer = Vec::new();
 
 
 	let filename = url.path_segments().unwrap().last().unwrap();
 	reqwest::blocking::get(url.as_str()).unwrap().copy_to(&mut buffer).unwrap();
 	let ext = std::path::Path::new(filename).extension().unwrap().to_str().unwrap();
-	let mut cursor = std::io::Cursor::new(buffer);
+	let mut cursor = std::io::Cursor::new(buffer.clone());
 	
 
 	match ext {
 		"zip" => {
 			let mut pkg_zip = zip::read::ZipArchive::new(&mut cursor).unwrap();
-			(guess_license_from_archive(&mut pkg_zip), guess_build_sys_from_zip(&mut pkg_zip))
+			(guess_license_from_archive(&mut pkg_zip), guess_build_sys_from_zip(&mut pkg_zip), Some(buffer))
 		}
-		_ => (None, None)
+		_ => (None, None, None)
 	}
 }

@@ -1,6 +1,7 @@
 mod vars;
 mod guess;
 
+use std::rc::Rc;
 use gtk::{Inhibit, ComboBoxExt, ComboBoxTextExt, ComboBoxText, TreeModelExt, FileChooserExt, TextBufferExt};
 use gtk::prelude::*;
 use gtk::DialogFlags;
@@ -15,6 +16,7 @@ use crate::vars::*;
 use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::string::ToString;
+use std::cell::RefCell;
 
 use self::HeaderMsg::*;
 use self::WinMsg::*;
@@ -119,7 +121,8 @@ pub struct PkgData {
     description: String,
     build_sys: String,
     org_yaml: Option<YamlPkg>,
-    file_path: Option<PathBuf>
+    file_path: Option<PathBuf>,
+    tarball_data: RefCell<Option<Rc<Vec<u8>>>>
 }
 
 fn ask_for_url(parent: &gtk::Window) -> Option<String> {
@@ -164,24 +167,30 @@ impl PkgData {
             version: "".to_string(),
             release: 1,
             source: "".to_string(),
-            license: "".to_string(),
-            component: "".to_string(),
+            license: "Unknown".to_string(),
+            component: "database".to_string(),
             summary: "".to_string(),
             description: "".to_string(),
-            build_sys: "".to_string(),
+            build_sys: "None".to_string(),
             org_yaml: None,
-            file_path: None
+            file_path: None,
+            tarball_data: RefCell::new(None)
 
         }
+    }
+
+    fn set_source(&mut self, new_source: String) {
+        self.source = new_source.to_string();
+        self.tarball_data = RefCell::new(None);
     }
 
     fn is_filled(&self) -> bool {
         !self.name.is_empty() && !self.version.is_empty() && !self.license.is_empty() && !self.component.is_empty() && !self.summary.is_empty() && !self.description.is_empty() && !self.build_sys.is_empty() && !self.source.is_empty()
     }
 
-    fn join_url_data(&mut self, url_data: &PkgDataUrl) {
+    fn join_url_data(&mut self, url_data: PkgDataUrl) {
         if self.name.is_empty() {
-            self.name = url_data.name.clone();
+            self.name = url_data.name;
         }
 
         if url_data.summary.is_some() && self.summary.is_empty() {
@@ -190,19 +199,41 @@ impl PkgData {
 
         // For now just clone the summary
         if url_data.summary.is_some() && self.description.is_empty() {
-            self.description = url_data.summary.clone().unwrap();
+            self.description = url_data.summary.unwrap();
         }
 
         if url_data.license.is_some() && self.license == "Unknown" {
-            self.license = url_data.license.as_ref().unwrap().to_string();
+            self.license = url_data.license.unwrap().to_string();
         }
 
         if url_data.build_sys.is_some() && self.build_sys == "None" {
-            self.build_sys = url_data.build_sys.as_ref().unwrap().to_string();
+            self.build_sys = url_data.build_sys.unwrap().to_string();
         }
 
-        self.source = url_data.source.clone();
-        self.version = url_data.version.clone();
+        self.set_source(url_data.source);
+        self.version = url_data.version;
+        self.tarball_data = RefCell::new({
+            if let Some(buffer) = url_data.tarball_data {
+                Some(Rc::new(buffer))
+            }
+            else {
+                None
+            }
+        });
+    }
+
+    fn tarball_data(&self) -> Rc<Vec<u8>> {
+        if self.tarball_data.borrow().is_some() {
+            self.tarball_data.borrow().as_ref().unwrap().clone()
+        }
+        else {
+            let mut buffer = Vec::new();
+            reqwest::blocking::get(&self.source).unwrap().copy_to(&mut buffer).unwrap();
+            let rc = Rc::new(buffer);
+            *self.tarball_data.borrow_mut() = Some(rc.clone());
+
+            rc
+        }
     }
 }
 
@@ -216,9 +247,7 @@ fn to_u8s(x: u32) -> [u8;4] {
     return [b1, b2, b3, b4]
 }
 
-fn calc_sha(source: &str) -> String  {
-    let mut buffer = Vec::new();
-    reqwest::blocking::get(source).unwrap().copy_to(&mut buffer).unwrap();
+fn calc_sha(buffer: &Vec<u8>) -> String  {
     let sha_u32 = digest(&buffer);
     let sha_u8 = [to_u8s(sha_u32[0]), to_u8s(sha_u32[1]), to_u8s(sha_u32[2]), to_u8s(sha_u32[3]), to_u8s(sha_u32[4]), to_u8s(sha_u32[5]), to_u8s(sha_u32[6]), to_u8s(sha_u32[7])].concat();
 
@@ -232,7 +261,8 @@ struct PkgDataUrl {
     source: String,
     summary: Option<String>,
     license: Option<String>,
-    build_sys: Option<String>
+    build_sys: Option<String>,
+    tarball_data: Option<Vec<u8>>
 }
 
 #[derive(Deserialize)]
@@ -332,24 +362,24 @@ fn from_url(url_str: &str) -> PkgDataUrl {
         }
     };
 
-    let (version, summary, license, build_sys) = match url_kind {
+    let (version, summary, license, build_sys, tarball_data) = match url_kind {
         UrlKind::File(_) => {
             let version = captures.name("version").map_or("", |reg_match| reg_match.as_str());
             let summary = guess_summary(&url);
-            let (license, build_sys) = crate::guess::try_guess_license_build_sys_from_url(&url);
+            let (license, build_sys, tarball_data) = crate::guess::try_guess_license_build_sys_for(&url);
 
-            (version.to_string(), summary, license, build_sys)
+            (version.to_string(), summary, license, build_sys, tarball_data)
         }
         UrlKind::GitRepo => {
             let version = chrono::Utc::now().format("%Y%m%d%H%M").to_string();
             let summary = guess_summary(&url);
             let license = guess_license_from_url(&url);
-            (version, summary, license, None)
+            (version, summary, license, None, None)
         }
     };
     
 
-    println!("{:?}, -> {}, {}, {}", whole_name, name, version, license.clone().unwrap_or("No license found".to_string()));
+    println!("{:?}, -> {}, {}, {}, {}", whole_name, name, version, license.clone().unwrap_or("No license found".to_string()), build_sys.clone().unwrap_or("No Build System".to_string()));
 
 
     PkgDataUrl {
@@ -358,7 +388,8 @@ fn from_url(url_str: &str) -> PkgDataUrl {
         source: url.to_string(),
         summary,
         license,
-        build_sys
+        build_sys,
+        tarball_data
     }
 }
 
@@ -463,10 +494,10 @@ fn calc_sha_git(url: &str) -> String {
     }
 }
 
-fn calc_sha_for(url: &str, kind: UrlKind) -> String {
+fn calc_sha_for(pkg_data: &PkgData, kind: UrlKind) -> String {
     match kind {
-        UrlKind::File(_) => calc_sha(url),
-        UrlKind::GitRepo => calc_sha_git(url)
+        UrlKind::File(_) => calc_sha(&pkg_data.tarball_data()),
+        UrlKind::GitRepo => calc_sha_git(&pkg_data.source)
     }
 }
 
@@ -475,7 +506,7 @@ impl Into<YamlPkg> for PkgData {
     fn into(self) -> YamlPkg {
         let mut bmap = BTreeMap::new();
         let url_kind = url_kind_analyze(&self.source);
-        let sha = calc_sha_for(&self.source, url_kind);
+        let sha = calc_sha_for(&self, url_kind);
         let url_formatted = url_format(&self.source, url_kind);
         bmap.insert(url_formatted, sha);
 
@@ -581,7 +612,8 @@ impl From<YamlPkg> for PkgData {
             description: yaml.description,
             build_sys:  build_sys.to_string(),
             org_yaml: Some(yaml_copy),
-            file_path: None
+            file_path: None,
+            tarball_data: RefCell::new(None)
         }
 
     }
@@ -608,6 +640,12 @@ impl Win {
     fn update_descr(&self) {
         let buffer = self.txt_descr.get_buffer().unwrap();
         buffer.set_text(&self.model.pkg_data.description);
+    }
+    fn update_txt_and_combos(&mut self) {
+        self.cmb_license.set_active_id(Some(&self.model.pkg_data.license));
+        self.cmb_buildsys.set_active_id(Some(&self.model.pkg_data.build_sys));
+        self.cmb_component.set_active_id(Some(&self.model.pkg_data.component));
+        self.update_descr();
     }
 }
 
@@ -655,6 +693,7 @@ impl Widget for Win {
             UrlChanged(url) => {
                 self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data.source = url;
+                self.model.pkg_data.tarball_data = RefCell::new(None);
             },
             LicenseChanged(license) => {
                 self.model.header.emit(HeaderMsg::SetSaved(false));
@@ -680,7 +719,8 @@ impl Widget for Win {
             New => {
                 self.model.header.emit(HeaderMsg::SetSaved(false));
                 self.model.pkg_data = PkgData::new();
-                self.update_descr();
+                println!("{:?}", self.model.pkg_data);
+                self.update_txt_and_combos();
             }
             LoadFile => {
                 if let Some(pkg_path) = ask_for_file(&self.window) {
@@ -691,11 +731,7 @@ impl Widget for Win {
                     pkg_data.file_path = Some(pkg_path);
                     self.model.pkg_data = pkg_data;
 
-                    self.update_descr();
-
-                    self.cmb_license.set_active_id(Some(&self.model.pkg_data.license));
-                    self.cmb_buildsys.set_active_id(Some(&self.model.pkg_data.build_sys));
-                    self.cmb_component.set_active_id(Some(&self.model.pkg_data.component));
+                    self.update_txt_and_combos();
 
                     self.model.header.emit(HeaderMsg::SetSaved(true));
                 }
@@ -703,16 +739,14 @@ impl Widget for Win {
             FromUrl => {
                 if let Some(url_str) = ask_for_url(&self.window) {
                     let url_data = from_url(&url_str);
-                    self.model.pkg_data.join_url_data(&url_data);
+                    self.model.pkg_data.join_url_data(url_data);
 
                     // Update Gui
                     self.ent_name.set_text(&self.model.pkg_data.name);
                     self.ent_version.set_text(&self.model.pkg_data.version);
                     self.ent_source.set_text(&self.model.pkg_data.source);
                     self.ent_summary.set_text(&self.model.pkg_data.summary);
-                    self.cmb_license.set_active_id(Some(&self.model.pkg_data.license));
-                    self.cmb_buildsys.set_active_id(Some(&self.model.pkg_data.build_sys));
-                    self.update_descr();
+                    self.update_txt_and_combos();
                 }
             },
             StartMaking => {
