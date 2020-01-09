@@ -918,7 +918,7 @@ impl Widget for Win {
                     }
                 },
                 gtk::Button {
-                    label: "Start",
+                    label: "Save",
                     sensitive: self.model.can_start,
                     clicked => StartMaking,
                     cell: {
