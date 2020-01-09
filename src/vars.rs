@@ -1,4 +1,4 @@
-pub const LICENSES: &[&str] = &["Unknown", "GPL-3.0-or-later", "GPL-3.0-only","GPL-2.0-or-later", "GPL-2.0-only", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0", "MIT", "BSD-3-Clause","BSD-2-Clause"];
+pub const LICENSES: &[&str] = &["Unknown", "GPL-3.0-or-later", "GPL-3.0-only","GPL-2.0-or-later", "GPL-2.0-only", "LGPL-2.0-only", "LGPL-2.0-or-later", "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later", "MIT", "BSD-3-Clause","BSD-2-Clause"];
 pub const BUILD_SYSS: &[&str] = &["None", "Meson", "Configure & Make", "CMake & Make", "CMake & Ninja", "Unknown"];
 
 pub const COMPONENTS: &[&str] = &[
