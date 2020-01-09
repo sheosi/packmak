@@ -25,9 +25,11 @@ The button "From URL" will ask for a URL pointing to a file and will try to infe
 - Source: (Well, of course)
 - Summary: If it came from a Github repo will load the main page and get the summary (buggy right now though)
 - Build system: Only for zip files, and only detects meson
-- License: Only for zip files, and only detects GPL-3
+- License: Only for zip files, and detects GPL-3-only and GPL-2-or-later.
 
 Also it's made so that updating an existing package is a matter of using "From URL" and saving.
+
+For now it accepts any kind of files but only git repos.
 
 ## Comments and format
 Despite the tool tries it's best not to damage or lose data, comments will be lost, and formatting might change, unfortunately there's little to do there as a solution to these does not seem trivial to implement.
