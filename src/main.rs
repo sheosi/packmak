@@ -236,8 +236,24 @@ struct PkgDataUrl {
 }
 
 #[derive(Deserialize)]
+struct RepoApiLicense {
+    spdx_id: String
+}
+
+#[derive(Deserialize)]
 struct RepoApiCall {
-    description: String
+    description: String,
+    license: RepoApiLicense
+}
+
+fn ask_gh_api_repo(author: &str, repo: &str) -> RepoApiCall{
+    let gh_api = Url::parse("https://api.github.com/repos/").unwrap();
+    let gh_api = gh_api.join(&(author.to_owned() + "/")).unwrap();
+    let gh_api = gh_api.join(repo).unwrap();
+    let client = reqwest::blocking::Client::new();
+
+    let api_call_resp = client.get(gh_api).header("User-Agent", "curl/7.37.0").send().unwrap();
+    api_call_resp.json().unwrap()
 }
 
 fn guess_summary (org_url: &Url) -> Option<String> {
@@ -247,14 +263,9 @@ fn guess_summary (org_url: &Url) -> Option<String> {
                 let mut segments = org_url.path_segments().unwrap();
                 if let Some(repo) = segments.clone().nth(1) {
                     let author_name = segments.nth(0).unwrap();
-                    let gh_api = Url::parse("https://api.github.com/repos/").unwrap();
-                    let gh_api = gh_api.join(&(author_name.to_owned() + "/")).unwrap();
-                    let gh_api = gh_api.join(repo).unwrap();
-                    let client = reqwest::blocking::Client::new();
+                    let resp = ask_gh_api_repo(author_name, repo);
+                    Some(resp.description)
 
-                    let api_call_resp = client.get(gh_api).header("User-Agent", "curl/7.37.0").send().unwrap();
-                    let api_call: RepoApiCall = api_call_resp.json().unwrap();
-                    Some(api_call.description)
                 }
                 else {
                     None
@@ -268,6 +279,37 @@ fn guess_summary (org_url: &Url) -> Option<String> {
     }
 }
 
+
+fn guess_license_from_url(org_url: &Url) -> Option<String> {
+    if let Some(host_str) = org_url.host_str() {
+        match host_str {
+            "github.com" => {
+                let mut segments = org_url.path_segments().unwrap();
+                if let Some(repo) = segments.clone().nth(1) {
+                    let author_name = segments.nth(0).unwrap();
+                    let resp = ask_gh_api_repo(author_name, repo);
+                    Some(update_license_id(resp.license.spdx_id))
+
+                }
+                else {
+                    None
+                }
+            }
+            _ => None
+        }
+    }
+    else {
+        None
+    }
+
+}
+
+fn update_license_id(id: String) -> String {
+    match id.as_str() {
+        "GPL-3.0" => "GPL-3.0-or-later".to_string(),
+        _ => id
+    }
+}
 
 fn from_url(url_str: &str) -> PkgDataUrl {
     let url = Url::parse(url_str).unwrap();
@@ -296,10 +338,13 @@ fn from_url(url_str: &str) -> PkgDataUrl {
             let summary = guess_summary(&url);
             let (license, build_sys) = crate::guess::try_guess_license_build_sys_from_url(&url);
 
-            (version, summary, license, build_sys)
+            (version.to_string(), summary, license, build_sys)
         }
         UrlKind::GitRepo => {
-            ("", None, None, None)
+            let version = chrono::Utc::now().format("%Y%m%d%H%M").to_string();
+            let summary = guess_summary(&url);
+            let license = guess_license_from_url(&url);
+            (version, summary, license, None)
         }
     };
     
@@ -309,7 +354,7 @@ fn from_url(url_str: &str) -> PkgDataUrl {
 
     PkgDataUrl {
         name: name.to_string(),
-        version: version.to_string(),
+        version: version,
         source: url.to_string(),
         summary,
         license,
