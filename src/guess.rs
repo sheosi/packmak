@@ -118,6 +118,9 @@ fn guess_build_sys_from_zip<'a, A: Archive>(pkg_zip: &'a mut A) -> Option<String
 	else if let Some(_) = pkg_zip.search_like(&["configure"]) {
 		Some("Configure & Make".to_string())
 	}
+	else if let Some(_) = pkg_zip.search_like(&["cmakelists"]) {
+		Some("CMake & Make".to_string())
+	}
 	else {
 		None
 	}

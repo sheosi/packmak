@@ -424,6 +424,8 @@ impl Into<YamlPkg> for PkgData {
         let (setup_str, build_str, install_str) = match self.build_sys.as_str() {
             "Meson" => ("%meson_configure".to_string(), "%ninja_build".to_string(), "%ninja_install".to_string()),
             "Configure & Make" => ("%configure".to_string(), "%make".to_string(), "%make_install".to_string()),
+            "CMake & Make" => ("%cmake".to_string(), "%make".to_string(), "%make_install".to_string()),
+            "CMake & Ninja" => ("%cmake_ninja".to_string(), "%ninja_build".to_string(), "%ninja_install".to_string()),
             "Unknown" => {
                 if let Some(org_yaml) = self.org_yaml.clone() {
                     (org_yaml.setup, org_yaml.build, org_yaml.install)
@@ -474,10 +476,38 @@ impl Into<YamlPkg> for PkgData {
 }
 impl From<YamlPkg> for PkgData {
     fn from(yaml: YamlPkg) -> Self {
-        let build_sys = match yaml.setup.as_str() {
+        let build_sys_setup = match yaml.setup.as_str() {
             "%meson_configure" => "Meson",
+            "%configure" => "Configure & Make",
+            "%cmake" => "CMake & Make",
+            "%cmake_ninja" => "CMake & Ninja",
             _ => "Unknown" // Nothing else is supported right now xD
         };
+
+        let build_sys = {
+            match build_sys_setup {
+                "Meson" | "CMake & Ninja" => {
+                    if yaml.build.as_str() == "%ninja_build" && yaml.build.as_str() == "%ninja_install" {
+                        build_sys_setup
+                    }
+                    else {
+                        "Unknown"
+                    }
+                }
+
+                "Configure & Make" | "CMake & Make" => {
+                    if yaml.build.as_str() == "%make" && yaml.build.as_str() == "%make_install" {
+                            build_sys_setup
+                    }
+                    else {
+                        "Unknown"
+                    }
+                }
+
+                _ => "Unknown"
+            }
+        };
+
         let yaml_copy = yaml.clone();
 
         let (url_str, _) = yaml.source.first().unwrap().iter().nth(0).unwrap();
