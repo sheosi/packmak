@@ -13,6 +13,8 @@ use reqwest::Url;
 use regex::Regex;
 use crate::vars::*;
 use std::path::{PathBuf, Path};
+use std::process::Command;
+use std::string::ToString;
 
 use self::HeaderMsg::*;
 use self::WinMsg::*;
@@ -182,8 +184,8 @@ impl PkgData {
             self.name = url_data.name.clone();
         }
 
-        if self.summary.is_empty() {
-            self.summary = url_data.summary.clone();
+        if url_data.summary.is_some() && self.summary.is_empty() {
+            self.summary = url_data.summary.clone().unwrap();
         }
 
         if url_data.license.is_some() && self.license == "Unknown" {
@@ -223,29 +225,39 @@ struct PkgDataUrl {
     name: String,
     version: String,
     source: String,
-    summary: String,
+    summary: Option<String>,
     license: Option<String>,
     build_sys: Option<String>
 }
 
-fn guess_summary (org_url: &Url) -> String {
+fn guess_summary (org_url: &Url) -> Option<String> {
     let mut segments = org_url.path_segments().unwrap();
     let mut main_url = org_url.clone();
 
-    let repo = segments.clone().nth_back(3).unwrap();
-    let author_name = segments.nth_back(2).unwrap();
-    main_url.set_path(&(author_name.to_owned() + "/" + repo));
-    let html = reqwest::blocking::get(main_url).unwrap().text().unwrap();
+    if let Some(repo) = segments.clone().nth_back(3) {
+        let author_name = segments.nth_back(2).unwrap();
+        main_url.set_path(&(author_name.to_owned() + "/" + repo));
+        let html = reqwest::blocking::get(main_url).unwrap().text().unwrap();
 
-    let summary_regex = Regex::new("<meta name=\"description\" content=\"([\\s\\w]+)\\.").unwrap();
-    let captures = summary_regex.captures(&html).unwrap();
-    captures.get(1).unwrap().as_str().to_string()
+        // For github
+        let summary_regex = Regex::new("<meta name=\"description\" content=\"([\\s\\w]+)\\.").unwrap();
+        if let Some(captures) = summary_regex.captures(&html) {
+            Some(captures.get(1).unwrap().as_str().to_string())
+        }
+        else {
+            None
+        }
+    }
+    else {
+        None
+    }
 
 }
 
 
-fn from_url(url: &str) -> PkgDataUrl {
-    let url = Url::parse(url).unwrap();
+fn from_url(url_str: &str) -> PkgDataUrl {
+    let url = Url::parse(url_str).unwrap();
+    let url_kind = url_kind_analyze(url_str);
     let url_parser = Regex::new(r"(?P<name>\D\w+)?-?\s*(?P<version>\d+\.?(?:\d+\.)?\d+?)?").unwrap();
     let url_segments = url.path_segments().ok_or_else(|| "cannot be base").unwrap();
     let whole_name = url_segments.clone().last().unwrap();
@@ -264,11 +276,21 @@ fn from_url(url: &str) -> PkgDataUrl {
         }
     };
 
-    let version = captures.name("version").map_or("", |reg_match| reg_match.as_str());
-    let summary = guess_summary(&url);
-    let (license, build_sys) = crate::guess::try_guess_license_build_sys_from_url(&url);
+    let (version, summary, license, build_sys) = match url_kind {
+        UrlKind::File(_) => {
+            let version = captures.name("version").map_or("", |reg_match| reg_match.as_str());
+            let summary = guess_summary(&url);
+            let (license, build_sys) = crate::guess::try_guess_license_build_sys_from_url(&url);
 
-    println!("{:?}, -> {}, {}, {}", whole_name, name, version, license.clone().unwrap());
+            (version, summary, license, build_sys)
+        }
+        UrlKind::GitRepo => {
+            ("", None, None, None)
+        }
+    };
+    
+
+    println!("{:?}, -> {}, {}, {}", whole_name, name, version, license.clone().unwrap_or("No license found".to_string()));
 
 
     PkgDataUrl {
@@ -331,16 +353,77 @@ struct YamlPkg {
 
 }
 
+#[derive(Clone, Copy)]
+enum FileKind {
+    Zip,
+    Other
+}
+
+#[derive(Clone, Copy)]
+enum UrlKind {
+    GitRepo,
+    File(FileKind)
+}
+
+fn url_kind_analyze(url: &str) -> UrlKind {
+    let url = Url::parse(url).unwrap();
+    let last_part = url.path_segments().unwrap().nth_back(0).unwrap();
+    let opt_ext = Path::new(last_part).extension();
+
+    if let Some(ext) = opt_ext {
+        match ext.to_str().unwrap() {
+            "zip" => UrlKind::File(FileKind::Zip),
+            "git" => UrlKind::GitRepo,
+            _ => UrlKind::File(FileKind::Other)
+        }
+    }
+    else {
+        // Might be other things, but right now only a Git repo is supported
+        UrlKind::GitRepo
+    }
+}
+
+fn url_format(url: &str, kind: UrlKind) -> String {
+    match kind {
+        UrlKind::GitRepo => "git|".to_owned() + url,
+        UrlKind::File(_) => url.to_string()
+    }
+}
+
+fn calc_sha_git(url: &str) -> String {
+    let url_parsed = Url::parse(url).unwrap();
+    let whole_name = url_parsed.path_segments().unwrap().nth_back(0).unwrap();
+    let base_name =Path::new(&whole_name).file_name().unwrap();
+    let succeed = Command::new("git").args(&["clone", url]).status().unwrap().success();
+    if succeed {
+        let stdout = Command::new("git").args(&["log", "--format=%H", "-n", "1"]).current_dir(base_name).output().unwrap().stdout;
+        std::str::from_utf8(&stdout).unwrap().to_string()
+    }
+    else {
+        "".to_string()
+    }
+}
+
+fn calc_sha_for(url: &str, kind: UrlKind) -> String {
+    match kind {
+        UrlKind::File(_) => calc_sha(url),
+        UrlKind::GitRepo => calc_sha_git(url)
+    }
+}
+
 impl Into<YamlPkg> for PkgData {
 
     fn into(self) -> YamlPkg {
         let mut bmap = BTreeMap::new();
-        let sha = calc_sha(&self.source);
-        bmap.insert(self.source, sha); // TODO: Calc sha256
+        let url_kind = url_kind_analyze(&self.source);
+        let sha = calc_sha_for(&self.source, url_kind);
+        let url_formatted = url_format(&self.source, url_kind);
+        bmap.insert(url_formatted, sha);
 
         let empty = ("".to_string(), "".to_string(), "".to_string());
         let (setup_str, build_str, install_str) = match self.build_sys.as_str() {
             "Meson" => ("%meson_configure".to_string(), "%ninja_build".to_string(), "%ninja_install".to_string()),
+            "Configure & Make" => ("%configure".to_string(), "%make".to_string(), "%make_install".to_string()),
             "Unknown" => {
                 if let Some(org_yaml) = self.org_yaml.clone() {
                     (org_yaml.setup, org_yaml.build, org_yaml.install)
@@ -520,6 +603,11 @@ impl Widget for Win {
                     self.model.pkg_data = pkg_data;
 
                     self.update_descr();
+
+                    self.cmb_license.set_active_id(Some(&self.model.pkg_data.license));
+                    self.cmb_buildsys.set_active_id(Some(&self.model.pkg_data.build_sys));
+                    self.cmb_component.set_active_id(Some(&self.model.pkg_data.component));
+
                     self.model.header.emit(HeaderMsg::SetSaved(true));
                 }
             },

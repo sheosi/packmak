@@ -32,7 +32,64 @@ fn guess_license_str(input: &str) -> String {
 	}
 }
 
-fn guess_license_from_zipfile(input: &mut ZipFile) -> String {
+// This trait is a way to circumvent how Rust treats generic associated lifetimes
+trait Gat<'a> {
+	type FileRead: Read + 'a;
+
+	fn get_file(&'a mut self, id: Self::ArchiveRef) -> Option<Self::FileRead> where Self: Archive;
+}
+
+type ArchRef<T> = <T as Archive>::ArchiveRef;
+
+impl<'a, R: Read + Seek> Gat<'a> for ZipArchive<R> {
+	type FileRead = ZipFile<'a>;
+
+
+	fn get_file(&'a mut self, id: ArchRef<Self>) -> Option<Self::FileRead> {
+		if let Ok(file) = self.by_index(id) {
+			Some(file)
+		}
+		else {
+			None
+		}
+	}
+}
+
+trait Archive {
+	type ArchiveRef;
+
+	fn search_like(& mut self, names: &[&str]) -> Option<Self::ArchiveRef>;
+}
+
+impl<R: Read + Seek> Archive for ZipArchive<R> {
+	type ArchiveRef = usize;
+
+	// Search in zip_arc for a file whose name is like one of names, case insensitve
+	// NOTE: names must be in lowercase
+	fn search_like(&mut self, names: &[&str]) -> Option<Self::ArchiveRef> {
+		let max = self.len();
+		let mut index_opt: Option<usize> = None;
+		for i in 0..max {
+			let zip_file = self.by_index(i).unwrap();
+			let file_name = zip_file.sanitized_name().file_name().unwrap().to_str().unwrap().to_lowercase();
+			for name in names.iter() {
+				if name == &file_name {
+					index_opt = Some(i)
+				}
+			}
+		}
+
+		if let Some(ind_val) = index_opt {
+			Some(ind_val)
+		}
+
+		else {
+			None
+		}
+	}
+}
+
+fn guess_license_from_archive_file<R: Read>(input: &mut R) -> String {
 
 	let mut license_str = String::new();
 	input.read_to_string(&mut license_str).unwrap();
@@ -40,27 +97,13 @@ fn guess_license_from_zipfile(input: &mut ZipFile) -> String {
 	guess_license_str(&license_str)
 }
 
-// Search in zip_arc for a file whose name is like one of names, case insensitve
-// NOTE: names must be in lowercase
-fn search_for_something_like<R: Read + Seek>(zip_arc: &mut ZipArchive<R>, names: &[&str]) -> Option<usize>{
-	let max = zip_arc.len();
-
-	for i in 0..max {
-		let zip_file = zip_arc.by_index(i).unwrap();
-		let file_name = zip_file.sanitized_name().file_name().unwrap().to_str().unwrap().to_lowercase();
-		for name in names.iter() {
-			if name == &file_name {
-				return Some(i)
-			}
-		}
-	}
-
-	None
-}
-
-fn guess_license_from_zip<R: Read + Seek>(pkg_zip: &mut ZipArchive<R>) -> Option<String> {
-	if let Some(license_index) = search_for_something_like(pkg_zip, &["license", "copying"]) {
-		Some(guess_license_from_zipfile(&mut pkg_zip.by_index(license_index).unwrap()))
+fn guess_license_from_archive<'a, A: Archive + Gat<'a>>(mut pkg_zip: &'a mut A) -> Option<String> {
+	let a = {
+		let b1 = &mut pkg_zip;
+		b1.search_like(&["license", "copying"])
+	};
+	if let Some(license_file) = a {
+		Some(guess_license_from_archive_file::<A::FileRead>(&mut pkg_zip.get_file(license_file).unwrap()))
 	}
 	else {
 		None
@@ -68,12 +111,14 @@ fn guess_license_from_zip<R: Read + Seek>(pkg_zip: &mut ZipArchive<R>) -> Option
 
 }
 
-fn guess_build_sys_from_zip<R: Read + Seek>(pkg_zip: &mut ZipArchive<R>) -> Option<String> {
-	if let Some(_) = search_for_something_like(pkg_zip, &["meson"]) {
+fn guess_build_sys_from_zip<'a, A: Archive>(pkg_zip: &'a mut A) -> Option<String> {
+	if let Some(_) = pkg_zip.search_like(&["meson"]) {
 		Some("Meson".to_string())
 	}
+	else if let Some(_) = pkg_zip.search_like(&["configure"]) {
+		Some("Configure & Make".to_string())
+	}
 	else {
-				println!("IDK");
 		None
 	}
 }
@@ -85,12 +130,14 @@ pub fn try_guess_license_build_sys_from_url(url: &Url) -> (Option<String>, Optio
 	let filename = url.path_segments().unwrap().last().unwrap();
 	reqwest::blocking::get(url.as_str()).unwrap().copy_to(&mut buffer).unwrap();
 	let ext = std::path::Path::new(filename).extension().unwrap().to_str().unwrap();
-
 	let mut cursor = std::io::Cursor::new(buffer);
-	let mut pkg_zip = zip::read::ZipArchive::new(&mut cursor).unwrap();
+	
 
 	match ext {
-		"zip" => (guess_license_from_zip(&mut pkg_zip), guess_build_sys_from_zip(&mut pkg_zip)),
+		"zip" => {
+			let mut pkg_zip = zip::read::ZipArchive::new(&mut cursor).unwrap();
+			(guess_license_from_archive(&mut pkg_zip), guess_build_sys_from_zip(&mut pkg_zip))
+		}
 		_ => (None, None)
 	}
 }
