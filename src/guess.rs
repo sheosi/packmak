@@ -21,15 +21,28 @@ const GPL_V_3_SNIPPET: &str  = "GNU GENERAL PUBLIC LICENSE
   The GNU General Public License is a free, copyleft license for
 software and other kinds of works.";
 
+const GPL_V_2_OR_LATER_SNIPPET: &str = "This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 2 of the
+License, or (at your option) any later version.";
+
 fn guess_license_str(input: &str) -> String {
 	let input = input.trim();
-	let gpl3_dist = edit_distance(&input[..GPL_V_3_SNIPPET.len()], GPL_V_3_SNIPPET);
-	if gpl3_dist < MAX_DIST {
-		"GPL-3.0".to_string()
+
+	let licenses = [
+		("GPL-3.0-only", GPL_V_3_SNIPPET),
+		("GPL-2.0-or-later", GPL_V_2_OR_LATER_SNIPPET)
+	];
+
+	for (l_name, snippet) in licenses.iter() {
+		if edit_distance(&input[..snippet.len()], snippet) < MAX_DIST {
+			return l_name.to_string()
+		}
 	}
-	else {
-		"Unknown".to_string()
-	}
+	
+	
+	"Unknown".to_string()
+	
 }
 
 // This trait is a way to circumvent how Rust treats generic associated lifetimes

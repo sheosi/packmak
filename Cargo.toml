@@ -13,7 +13,7 @@ relm = "^0.18.0"
 relm-derive = "^0.18.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "^0.8"
-reqwest = {version = "^0.10", features = ["blocking"] }
+reqwest = {version = "^0.10", features = ["blocking", "json"] }
 sha = "^1.0"
 regex = "1"
 hex = "^0.4"

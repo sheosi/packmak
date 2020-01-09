@@ -188,6 +188,11 @@ impl PkgData {
             self.summary = url_data.summary.clone().unwrap();
         }
 
+        // For now just clone the summary
+        if url_data.summary.is_some() && self.description.is_empty() {
+            self.description = url_data.summary.clone().unwrap();
+        }
+
         if url_data.license.is_some() && self.license == "Unknown" {
             self.license = url_data.license.as_ref().unwrap().to_string();
         }
@@ -230,28 +235,37 @@ struct PkgDataUrl {
     build_sys: Option<String>
 }
 
+#[derive(Deserialize)]
+struct RepoApiCall {
+    description: String
+}
+
 fn guess_summary (org_url: &Url) -> Option<String> {
-    let mut segments = org_url.path_segments().unwrap();
-    let mut main_url = org_url.clone();
+    if let Some(host_str) = org_url.host_str() {
+        match host_str {
+            "github.com" => {
+                let mut segments = org_url.path_segments().unwrap();
+                if let Some(repo) = segments.clone().nth(1) {
+                    let author_name = segments.nth(0).unwrap();
+                    let gh_api = Url::parse("https://api.github.com/repos/").unwrap();
+                    let gh_api = gh_api.join(&(author_name.to_owned() + "/")).unwrap();
+                    let gh_api = gh_api.join(repo).unwrap();
+                    let client = reqwest::blocking::Client::new();
 
-    if let Some(repo) = segments.clone().nth_back(3) {
-        let author_name = segments.nth_back(2).unwrap();
-        main_url.set_path(&(author_name.to_owned() + "/" + repo));
-        let html = reqwest::blocking::get(main_url).unwrap().text().unwrap();
-
-        // For github
-        let summary_regex = Regex::new("<meta name=\"description\" content=\"([\\s\\w]+)\\.").unwrap();
-        if let Some(captures) = summary_regex.captures(&html) {
-            Some(captures.get(1).unwrap().as_str().to_string())
-        }
-        else {
-            None
+                    let api_call_resp = client.get(gh_api).header("User-Agent", "curl/7.37.0").send().unwrap();
+                    let api_call: RepoApiCall = api_call_resp.json().unwrap();
+                    Some(api_call.description)
+                }
+                else {
+                    None
+                }
+            }
+            _ => None
         }
     }
     else {
         None
     }
-
 }
 
 
