@@ -28,9 +28,30 @@ The button "From URL" will ask for a URL pointing to a file and will try to infe
 
 Also it's made so that updating an existing package is a matter of using "From URL" and saving.
 
+## Comments and format
+Despite the tool tries it's best not to damage or lose data, comments will be lost, and formatting might change, unfortunately there's little to do there as a solution to these does not seem trivial to implement.
+
 ## Buginess
 This program is VERY buggy (just look at the miriads of unwrap all around), that said, this won't break anything, this program will panic (a lot probably), but is expected to never crash, so undefined behaviour shouldn't be possible (thanks Rust).
 
 In other words, this program will shut down itself a lot, but I have certain faith that it won't ruin anything (not battle tested, so a backup is always desirable).
 
 Also the GUI can be improved, I know (specially for )
+
+## Building and runnning
+Buildtime Dependencies:
+- libgtk-3-dev
+
+Runtime dependencies:
+- libgtk-3
+- git (Should be in path)
+
+Download repo:
+
+	git clone https://github.com/sheosi/packmak
+	cd packmak
+
+Build and run:
+	cargo run --release
+
+Once this is done the binary can found as target/release/packmak, nautilus doesn't seem to recognize it but that can be solved with a shell file calling it.
