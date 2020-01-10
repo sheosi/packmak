@@ -151,6 +151,11 @@ pub struct PkgData {
     build_deps: Vec<String>
 }
 
+fn cant_start_dialog(parent: &gtk::Window) {
+    let dialog = gtk::MessageDialog::new::<gtk::Window>(Some(parent), DialogFlags::MODAL | DialogFlags::USE_HEADER_BAR, gtk::MessageType::Error, gtk::ButtonsType::Ok, "Can't save because not everything has been filled up below");
+    dialog.show_all();
+}
+
 fn ask_for_url(parent: &gtk::Window) -> Option<String> {
     let dialog = gtk::MessageDialog::new::<gtk::Window>(Some(parent), DialogFlags::MODAL | DialogFlags::USE_HEADER_BAR, gtk::MessageType::Question, gtk::ButtonsType::OkCancel, "Please enter the desired URL to analyze");
     let url_entry = gtk::Entry::new();
@@ -781,22 +786,27 @@ impl Widget for Win {
                 }
             },
             StartMaking => {
-                let yaml: YamlPkg = self.model.pkg_data.clone().into();
-                let file_path = {
-                    if let Some(file_path) = &self.model.pkg_data.file_path {
-                        file_path.clone()
-                    }
-                    else {
-                        let pkg_path = Path::new(&std::env::current_dir().unwrap()).join(self.model.pkg_data.name.clone()).to_path_buf();
-                        if !pkg_path.is_dir() {
-                            std::fs::create_dir_all(&pkg_path).unwrap();
+                if self.model.can_start {
+                    let yaml: YamlPkg = self.model.pkg_data.clone().into();
+                    let file_path = {
+                        if let Some(file_path) = &self.model.pkg_data.file_path {
+                            file_path.clone()
                         }
+                        else {
+                            let pkg_path = Path::new(&std::env::current_dir().unwrap()).join(self.model.pkg_data.name.clone()).to_path_buf();
+                            if !pkg_path.is_dir() {
+                                std::fs::create_dir_all(&pkg_path).unwrap();
+                            }
 
-                        pkg_path.join("package.yml")
-                    }
-                };
-                serde_yaml::to_writer(std::fs::File::create(file_path).unwrap(),&yaml).unwrap();
-                self.model.header.emit(HeaderMsg::FileSaved);
+                            pkg_path.join("package.yml")
+                        }
+                    };
+                    serde_yaml::to_writer(std::fs::File::create(file_path).unwrap(),&yaml).unwrap();
+                    self.model.header.emit(HeaderMsg::FileSaved);
+                }
+                else {
+                    cant_start_dialog(&self.window);
+                }
             }
         }
         self.model.can_start = self.model.pkg_data.is_filled();
