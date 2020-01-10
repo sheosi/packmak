@@ -31,6 +31,8 @@ Also it's made so that updating an existing package is a matter of using "From U
 
 For now it accepts any kind of files but only git repos.
 
+Note: The tarball is kept in memory and no size check is made, so be careful with RAM usage and don't feed packages way too big, specially if the ammount of RAM available isn't so much
+
 ## Comments and format
 Despite the tool tries it's best not to damage or lose data, comments will be lost, and formatting might change, unfortunately there's little to do there as a solution to these does not seem trivial to implement.
 
@@ -58,3 +60,5 @@ Build and run:
 	cargo run --release
 
 Once this is done the binary can found as target/release/packmak, nautilus doesn't seem to recognize it but that can be solved with a shell file calling it.
+
+## Usage

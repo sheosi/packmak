@@ -9,14 +9,17 @@ edition = "2018"
 [dependencies]
 gtk = "^0.7.0"
 gdk = "^0.11"
+gio = "^0.8"
 relm = "^0.18.0"
 relm-derive = "^0.18.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "^0.8"
 reqwest = {version = "^0.10", features = ["blocking", "json"] }
 sha = "^1.0"
-regex = "1"
+regex = "^1"
 hex = "^0.4"
 edit-distance = "^2.1"
 zip = "^0.5"
 chrono = "^0.4"
+console = "^0.9"
+itertools = "^0.8"

@@ -1,5 +1,6 @@
 mod vars;
 mod guess;
+mod build_deps_mngr;
 
 use std::rc::Rc;
 use gtk::{Inhibit, ComboBoxExt, ComboBoxTextExt, ComboBoxText, TreeModelExt, FileChooserExt, TextBufferExt};
@@ -17,6 +18,7 @@ use std::path::{PathBuf, Path};
 use std::process::Command;
 use std::string::ToString;
 use std::cell::RefCell;
+use crate::build_deps_mngr::show_build_deps;
 
 use self::HeaderMsg::*;
 use self::WinMsg::*;
@@ -29,7 +31,10 @@ pub enum HeaderMsg {
     Load,
     BtnFromUrl,
     NewSubtitle(String),
-    SetSaved(bool)
+    FileModified,
+    FileSaved,
+    BtnBuildDeps,
+    BtnSave
 }
 
 pub struct HeaderModel {
@@ -70,9 +75,17 @@ impl Widget for Header {
                 self.model.pkg_name = subtitle;
                 self.model.subtitle = make_sub(&self.model);
             }
-            SetSaved(is_saved) => {
-                self.model.is_saved = is_saved;
-                self.model.subtitle = make_sub(&self.model);
+            FileModified => {
+                if self.model.is_saved {
+                    self.model.is_saved = false;
+                    self.model.subtitle = make_sub(&self.model);
+                }
+            },
+            FileSaved => {
+                if !self.model.is_saved {
+                    self.model.is_saved = true;
+                    self.model.subtitle = make_sub(&self.model);
+                }
             }
             _ => {}
         }
@@ -87,17 +100,29 @@ impl Widget for Header {
 
             gtk::Button {
                 clicked => BtnNew,
-                label: "New"
+                //label: "New",
+                image: Some(&gtk::Image::new_from_icon_name(Some("document-new-symbolic"), gtk::IconSize::Button))
             },
             #[name="load_button"]
             gtk::Button {
                 clicked => Load,
-                label: "Load",
+                //label: "Load",
+                image: Some(&gtk::Image::new_from_icon_name(Some("document-open-symbolic"), gtk::IconSize::Button))
             },
 
             gtk::Button {
                 clicked => BtnFromUrl,
                 label: "From URL"
+            },
+            gtk::Button {
+                clicked => BtnBuildDeps,
+                label: "Build deps"
+            },
+            gtk::Button {
+                //label: "Save",
+                image: Some(&gtk::Image::new_from_icon_name(Some("document-save-symbolic"), gtk::IconSize::Button)),
+                sensitive: !self.model.is_saved,
+                clicked => BtnSave
             }
         }
     }
@@ -122,7 +147,8 @@ pub struct PkgData {
     build_sys: String,
     org_yaml: Option<YamlPkg>,
     file_path: Option<PathBuf>,
-    tarball_data: RefCell<Option<Rc<Vec<u8>>>>
+    tarball_data: RefCell<Option<Rc<Vec<u8>>>>,
+    build_deps: Vec<String>
 }
 
 fn ask_for_url(parent: &gtk::Window) -> Option<String> {
@@ -174,8 +200,8 @@ impl PkgData {
             build_sys: "None".to_string(),
             org_yaml: None,
             file_path: None,
-            tarball_data: RefCell::new(None)
-
+            tarball_data: RefCell::new(None),
+            build_deps: Vec::new()
         }
     }
 
@@ -438,9 +464,6 @@ struct YamlPkg {
     check: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<String>
-
-
-
 }
 
 #[derive(Clone, Copy)]
@@ -613,7 +636,8 @@ impl From<YamlPkg> for PkgData {
             build_sys:  build_sys.to_string(),
             org_yaml: Some(yaml_copy),
             file_path: None,
-            tarball_data: RefCell::new(None)
+            tarball_data: RefCell::new(None),
+            build_deps: yaml.builddeps
         }
 
     }
@@ -630,6 +654,7 @@ pub enum WinMsg {
     BuildSysChanged(String),
     SummaryChanged(String),
     DescriptionChanged,
+    ShowBuildDeps,
     New,
     LoadFile,
     FromUrl,
@@ -674,7 +699,8 @@ impl Widget for Win {
         fill_combo(&self.cmb_license, LICENSES);
         fill_combo(&self.cmb_component, COMPONENTS);
         fill_combo(&self.cmb_buildsys, BUILD_SYSS);
-        
+
+        self.window.set_default_size(950, 600);
     }
 
     fn update(&mut self, event: WinMsg) {
@@ -683,43 +709,48 @@ impl Widget for Win {
             Quit => gtk::main_quit(),
             NameChanged(name) => {
                 self.model.header.emit(HeaderMsg::NewSubtitle(name.clone()));
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.name = name.clone();
             },
             VersionChanged(version) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.version = version;
             },
             UrlChanged(url) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.source = url;
                 self.model.pkg_data.tarball_data = RefCell::new(None);
             },
             LicenseChanged(license) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.license = license;
             },
             ComponentChanged(comp) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.component = comp;
             },
             BuildSysChanged(build_sys) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.build_sys = build_sys;
             },
             SummaryChanged(summary) => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data.summary = summary;
             },
             DescriptionChanged => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 let buffer = self.txt_descr.get_buffer().unwrap();
                 self.model.pkg_data.description = buffer.get_text(&buffer.get_start_iter(), &buffer.get_end_iter(), false).unwrap().to_string();
             },
+            ShowBuildDeps => {
+                if show_build_deps(&mut self.model.pkg_data.build_deps, &self.window) {
+                    self.model.header.emit(HeaderMsg::FileModified);
+                }
+
+            },
             New => {
-                self.model.header.emit(HeaderMsg::SetSaved(false));
+                self.model.header.emit(HeaderMsg::FileModified);
                 self.model.pkg_data = PkgData::new();
-                println!("{:?}", self.model.pkg_data);
                 self.update_txt_and_combos();
             }
             LoadFile => {
@@ -733,7 +764,7 @@ impl Widget for Win {
 
                     self.update_txt_and_combos();
 
-                    self.model.header.emit(HeaderMsg::SetSaved(true));
+                    self.model.header.emit(HeaderMsg::FileSaved);
                 }
             },
             FromUrl => {
@@ -765,7 +796,7 @@ impl Widget for Win {
                     }
                 };
                 serde_yaml::to_writer(std::fs::File::create(file_path).unwrap(),&yaml).unwrap();
-                self.model.header.emit(HeaderMsg::SetSaved(true));
+                self.model.header.emit(HeaderMsg::FileSaved);
             }
         }
         self.model.can_start = self.model.pkg_data.is_filled();
@@ -776,6 +807,8 @@ impl Widget for Win {
         connect!(header@BtnNew, relm, New);
         connect!(header@Load, relm, LoadFile);
         connect!(header@BtnFromUrl, relm, FromUrl);
+        connect!(header@BtnBuildDeps, relm, ShowBuildDeps);
+        connect!(header@BtnSave, relm, StartMaking);
 
         let buffer = &self.txt_descr.get_buffer().unwrap();
         connect!(relm, buffer, connect_changed(_), DescriptionChanged);
@@ -788,8 +821,6 @@ impl Widget for Win {
 
             #[name="app"]
             gtk::Grid {
-                row_homogeneous: true,
-                column_homogeneous: true,
                 gtk::Label {
                     markup: "<b>Name</b>",
                 },
@@ -797,6 +828,8 @@ impl Widget for Win {
                 gtk::Entry {
                     text: &self.model.pkg_data.name,
                     changed(entry) => NameChanged(entry.get_text().expect("get_text failed").to_string()),
+                    
+                    hexpand: true,
                     cell : {
                         width: RIGHT_COL_PROPORTION
                     }
@@ -813,6 +846,8 @@ impl Widget for Win {
                 gtk::Entry {
                     text: &self.model.pkg_data.version,
                     changed(entry) => VersionChanged(entry.get_text().expect("get_text failed").to_string()),
+
+                    hexpand: true,
                     cell: {
                         top_attach: 1,
                         left_attach: 1,
@@ -829,7 +864,9 @@ impl Widget for Win {
                 #[name="ent_source"]
                 gtk::Entry {
                     text: &self.model.pkg_data.source,
-                    changed(entry) => UrlChanged(entry.get_text().expect("get_text failed").to_string()),
+                    changed(entry) => UrlChanged(entry.get_text().expect("get_text failed").to_string()),                    
+                    
+                    hexpand: true,
                     cell: {
                         top_attach: 2,
                         left_attach: 1,
@@ -846,6 +883,8 @@ impl Widget for Win {
                 #[name="cmb_license"]
                 gtk::ComboBoxText {
                     changed(combo) => LicenseChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+                    
+                    hexpand: true,
                     cell: {
                         top_attach: 3,
                         left_attach: 1,
@@ -862,6 +901,8 @@ impl Widget for Win {
                 #[name="cmb_component"]
                 gtk::ComboBoxText {
                     changed(combo) => ComponentChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+
+                    hexpand: true,
                     cell: {
                         top_attach: 4,
                         left_attach: 1,
@@ -878,6 +919,8 @@ impl Widget for Win {
                 #[name="cmb_buildsys"]
                 gtk::ComboBoxText {
                     changed(combo) => BuildSysChanged(combo.get_active_text().expect("get_active_text failed").to_string()),
+
+                    hexpand: true,
                     cell: {
                         top_attach: 5,
                         left_attach: 1,
@@ -895,6 +938,8 @@ impl Widget for Win {
                 gtk::Entry { // Summary
                     text: &self.model.pkg_data.summary,
                     changed(entry) => SummaryChanged(entry.get_text().expect("get_text failed").to_string()),
+
+                    hexpand: true,
                     cell: {
                         top_attach: 6,
                         left_attach: 1,
@@ -911,19 +956,13 @@ impl Widget for Win {
                 #[name="txt_descr"]
                 gtk::TextView {
                     wrap_mode: gtk::WrapMode::Word,
+
+                    hexpand: true,
+                    vexpand: true,
                     cell: {
                         top_attach: 7,
                         left_attach: 1,
                         width: RIGHT_COL_PROPORTION
-                    }
-                },
-                gtk::Button {
-                    label: "Save",
-                    sensitive: self.model.can_start,
-                    clicked => StartMaking,
-                    cell: {
-                        top_attach: 8,
-                        left_attach: RIGHT_COL_PROPORTION
                     }
                 }
             },
