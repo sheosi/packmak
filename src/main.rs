@@ -154,6 +154,8 @@ pub struct PkgData {
 fn cant_start_dialog(parent: &gtk::Window) {
     let dialog = gtk::MessageDialog::new::<gtk::Window>(Some(parent), DialogFlags::MODAL | DialogFlags::USE_HEADER_BAR, gtk::MessageType::Error, gtk::ButtonsType::Ok, "Can't save because not everything has been filled up below");
     dialog.show_all();
+    dialog.run();
+    dialog.destroy();
 }
 
 fn ask_for_url(parent: &gtk::Window) -> Option<String> {
@@ -515,7 +517,7 @@ fn calc_sha_git(url: &str) -> String {
     let succeed = Command::new("git").args(&["clone", url]).status().unwrap().success();
     if succeed {
         let stdout = Command::new("git").args(&["log", "--format=%H", "-n", "1"]).current_dir(base_name).output().unwrap().stdout;
-        std::str::from_utf8(&stdout).unwrap().to_string()
+        std::str::from_utf8(&stdout).unwrap().to_string().trim()
     }
     else {
         "".to_string()
